@@ -3,9 +3,20 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, AreaChart, Area } from 'recharts';
-import { Calculator, Target, ArrowUpRight, Wallet, TrendingUp, AlertCircle, Calendar, Printer } from 'lucide-react';
+import { Calculator, Target, ArrowUpRight, Wallet, TrendingUp, AlertCircle, Calendar, Printer, Table as TableIcon, ChevronDown, ChevronUp, BrainCircuit, Plus, Trash2, Loader2, Save } from 'lucide-react';
+import { GoogleGenAI } from "@google/genai";
+import Markdown from 'react-markdown';
+
+interface RealTrade {
+  capital: number;
+  profit: number;
+  loss: number;
+  withdrawn?: number;
+  kept?: number;
+  total?: number;
+}
 
 export default function App() {
   const [initialCapital, setInitialCapital] = useState<number>(1000);
@@ -16,6 +27,217 @@ export default function App() {
   const [goalMode, setGoalMode] = useState<'target_capital' | 'fixed_trades'>('target_capital');
   const [numberOfTrades, setNumberOfTrades] = useState<number>(50);
   const [tradesPerDay, setTradesPerDay] = useState<number>(1);
+  const [showTable, setShowTable] = useState<boolean>(false);
+
+  // Real Trades & AI State
+  const [actualTrades, setActualTrades] = useState<RealTrade[]>([]);
+  const [newTradeCapital, setNewTradeCapital] = useState<string>('');
+  const [newTradeProfit, setNewTradeProfit] = useState<string>('');
+  const [newTradeLoss, setNewTradeLoss] = useState<string>('');
+  const [aiAnalysis, setAiAnalysis] = useState<string>('');
+  const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
+
+  const realMetrics = useMemo(() => {
+    if (actualTrades.length === 0) {
+      return {
+        total: 0,
+        wins: 0,
+        losses: 0,
+        winRate: '0.0',
+        totalProfit: '0.00',
+        avgWin: '0.00',
+        avgLoss: '0.00'
+      };
+    }
+    const wins = actualTrades.filter(t => t.profit > t.loss);
+    const losses = actualTrades.filter(t => t.loss > t.profit);
+    const totalProfit = actualTrades.reduce((a, b) => a + b.profit - b.loss, 0);
+    const winRate = (wins.length / actualTrades.length) * 100;
+    return {
+      total: actualTrades.length,
+      wins: wins.length,
+      losses: losses.length,
+      winRate: winRate.toFixed(1),
+      totalProfit: totalProfit.toFixed(2),
+      avgWin: wins.length ? (wins.reduce((a, b) => a + (b.profit - b.loss), 0) / wins.length).toFixed(2) : '0.00',
+      avgLoss: losses.length ? (Math.abs(losses.reduce((a, b) => a + (b.profit - b.loss), 0)) / losses.length).toFixed(2) : '0.00',
+    };
+  }, [actualTrades]);
+
+  const [tradeInputError, setTradeInputError] = useState<string>('');
+  const [tradeToDelete, setTradeToDelete] = useState<number | null>(null);
+  const [showRealTradesTable, setShowRealTradesTable] = useState<boolean>(false);
+  const [saveMessage, setSaveMessage] = useState<string>('');
+  const isLoaded = useRef(false);
+
+  // Load saved trades on mount
+  useEffect(() => {
+    const saved = localStorage.getItem('trading_actual_trades');
+    if (saved) {
+      try {
+        setActualTrades(JSON.parse(saved));
+      } catch (e) {
+        console.error('Failed to parse saved trades');
+      }
+    }
+    isLoaded.current = true;
+  }, []);
+
+  // Auto-save trades when they change
+  useEffect(() => {
+    if (isLoaded.current) {
+      localStorage.setItem('trading_actual_trades', JSON.stringify(actualTrades));
+    }
+  }, [actualTrades]);
+
+  const handleSaveTrades = () => {
+    localStorage.setItem('trading_actual_trades', JSON.stringify(actualTrades));
+    setSaveMessage('تم حفظ الصفقات بنجاح!');
+    setTimeout(() => setSaveMessage(''), 3000);
+  };
+
+  const enrichedActualTrades = useMemo(() => {
+    let currentCap = initialCapital;
+    return actualTrades.map((trade, index) => {
+      const net = trade.profit - trade.loss;
+      let withdrawn = 0;
+      let kept = net;
+      
+      const isGoalReached = goalMode === 'target_capital' 
+        ? currentCap >= targetCapital 
+        : index >= numberOfTrades;
+
+      if (trade.withdrawn !== undefined || trade.kept !== undefined) {
+        withdrawn = trade.withdrawn || 0;
+        kept = trade.kept || 0;
+      } else if (net > 0) {
+        if (!isGoalReached) {
+          withdrawn = net * (withdrawalPercentage / 100);
+          kept = net * (1 - withdrawalPercentage / 100);
+        } else {
+          withdrawn = net;
+          kept = 0;
+        }
+      }
+
+      currentCap = trade.total !== undefined ? trade.total : currentCap + kept;
+
+      return {
+        ...trade,
+        net,
+        withdrawn,
+        kept,
+        currentCap,
+        isGoalReached
+      };
+    });
+  }, [actualTrades, initialCapital, targetCapital, numberOfTrades, goalMode, withdrawalPercentage]);
+
+  // Auto-fill capital with the last currentCap
+  useEffect(() => {
+    if (enrichedActualTrades.length > 0) {
+      setNewTradeCapital(enrichedActualTrades[enrichedActualTrades.length - 1].currentCap.toString());
+    } else {
+      setNewTradeCapital(initialCapital.toString());
+    }
+  }, [enrichedActualTrades, initialCapital]);
+
+  // Calculate preview values for the new trade
+  const previewCapital = parseFloat(newTradeCapital) || 0;
+  const previewProfit = parseFloat(newTradeProfit) || 0;
+  const previewLoss = parseFloat(newTradeLoss) || 0;
+  const previewNet = previewProfit - previewLoss;
+  
+  let previewWithdrawn = 0;
+  let previewKept = previewNet;
+  
+  const isGoalReachedPreview = goalMode === 'target_capital' 
+    ? previewCapital >= targetCapital 
+    : actualTrades.length >= numberOfTrades;
+
+  if (previewNet > 0) {
+    if (!isGoalReachedPreview) {
+      previewWithdrawn = previewNet * (withdrawalPercentage / 100);
+      previewKept = previewNet * (1 - withdrawalPercentage / 100);
+    } else {
+      previewWithdrawn = previewNet;
+      previewKept = 0;
+    }
+  }
+  const previewTotal = previewCapital + previewKept;
+
+  const handleAddTrade = () => {
+    if (newTradeCapital === '' || (newTradeProfit === '' && newTradeLoss === '')) {
+      setTradeInputError('الرجاء إدخال رأس المال وقيمة الربح أو الخسارة');
+      return;
+    }
+
+    const capital = parseFloat(newTradeCapital) || 0;
+    const profit = parseFloat(newTradeProfit) || 0;
+    const loss = parseFloat(newTradeLoss) || 0;
+    
+    setActualTrades([...actualTrades, { capital, profit, loss }]);
+    setNewTradeProfit('');
+    setNewTradeLoss('');
+    setTradeInputError('');
+  };
+
+  const handleRemoveTrade = (index: number) => {
+    setTradeToDelete(index);
+  };
+
+  const confirmRemoveTrade = () => {
+    if (tradeToDelete !== null) {
+      setActualTrades(actualTrades.filter((_, i) => i !== tradeToDelete));
+      setTradeToDelete(null);
+    }
+  };
+
+  const cancelRemoveTrade = () => {
+    setTradeToDelete(null);
+  };
+
+  const analyzePerformance = async () => {
+    if (actualTrades.length === 0) return;
+    setIsAnalyzing(true);
+    try {
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      
+      const theoreticalSubset = data.slice(1, actualTrades.length + 1);
+      
+      const prompt = `
+      أنا متداول أستخدم خطة تداول.
+      رأس المال الأساسي: ${initialCapital}$
+      الهدف: ${goalMode === 'target_capital' ? targetCapital + '$' : numberOfTrades + ' صفقة'}
+      نسبة الربح المستهدفة لكل صفقة: ${profitPercentage}%
+      نسبة سحب الأرباح: ${withdrawalPercentage}%
+
+      إليك مقارنة بين الصفقات النظرية (المخطط لها) والصفقات الحقيقية التي قمت بها:
+      ${actualTrades.map((actual, i) => {
+        const theo = theoreticalSubset[i];
+        const net = actual.profit - actual.loss;
+        return `الصفقة ${i + 1}: المخطط (ربح ${theo?.profit || 0}$)، الحقيقي (رأس المال: ${actual.capital}$، ${net >= 0 ? 'ربح' : 'خسارة'} ${Math.abs(net)}$)`;
+      }).join('\n')}
+
+      بناءً على هذه البيانات، قم بتحليل أدائي كمتداول. 
+      هل أنا أتبع الخطة؟ ما هي الأخطاء التي أقع فيها؟ 
+      أعطني 3 نصائح عملية (Tips) ومختصرة لتحسين أدائي والالتزام بإدارة المخاطر.
+      تحدث معي باللغة العربية بأسلوب مشجع واحترافي.
+      `;
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3.1-pro-preview",
+        contents: prompt,
+      });
+
+      setAiAnalysis(response.text || 'لم يتم استلام تحليل.');
+    } catch (error) {
+      console.error(error);
+      setAiAnalysis('حدث خطأ أثناء تحليل البيانات. يرجى المحاولة مرة أخرى.');
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
 
   const data = useMemo(() => {
     if (initialCapital <= 0 || profitPercentage <= 0 || withdrawalPercentage < 0 || withdrawalPercentage >= 100 || tradesPerDay <= 0) {
@@ -92,8 +314,14 @@ export default function App() {
         
         {/* Header */}
         <header className="flex items-center gap-4 mb-8 print:mb-4">
-          <div className="flex items-center justify-center w-14 h-14 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-2xl text-white shadow-lg shadow-blue-500/25 print:bg-blue-100 print:text-blue-800 print:shadow-none">
-            <span className="text-3xl font-bold">$</span>
+          <div className="relative">
+            <div className="absolute inset-0 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-2xl blur opacity-50 print:hidden"></div>
+            <img 
+              src="https://img.lovepik.com/photo/20211208/medium/lovepik-stock-market-finance-stock-investment-wealth-picture_501598281.jpg" 
+              alt="Trading App Logo" 
+              className="relative w-14 h-14 rounded-2xl object-cover border-2 border-white/10 print:border-slate-200 print:shadow-none"
+              referrerPolicy="no-referrer"
+            />
           </div>
           <div>
             <h1 className="text-3xl font-bold text-white print:text-slate-900 tracking-tight">تداول</h1>
@@ -347,13 +575,304 @@ export default function App() {
           </div>
         </div>
 
+        {/* Real Trades & AI Analysis */}
+        {data.length > 0 && (
+          <div className="bg-slate-900/50 backdrop-blur-xl p-6 rounded-3xl shadow-2xl border border-white/5 print:bg-white print:shadow-none print:border-none print:p-0 print:mt-8">
+            <h3 className="text-lg font-semibold mb-6 text-white print:text-slate-900 flex items-center gap-2">
+              <BrainCircuit className="w-5 h-5 text-purple-400 print:text-purple-600" />
+              تتبع الصفقات الحقيقية وتحليل الذكاء الاصطناعي
+            </h3>
+            
+            {/* Summary Section */}
+            {realMetrics && (
+              <div className="mb-8">
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 print:grid-cols-5 print:gap-4">
+                  <div className="bg-slate-950/50 p-4 rounded-xl border border-white/5 print:bg-slate-50 print:border-slate-200">
+                    <div className="text-slate-400 print:text-slate-500 text-sm mb-1">إجمالي الصفقات</div>
+                    <div className="text-xl font-bold text-white print:text-slate-900">{realMetrics.total}</div>
+                  </div>
+                  <div className="bg-slate-950/50 p-4 rounded-xl border border-white/5 print:bg-slate-50 print:border-slate-200">
+                    <div className="text-slate-400 print:text-slate-500 text-sm mb-1">إجمالي الربح/الخسارة</div>
+                    <div className={`text-xl font-bold ${Number(realMetrics.totalProfit) >= 0 ? 'text-emerald-400 print:text-emerald-600' : 'text-red-400 print:text-red-600'}`}>
+                      {Number(realMetrics.totalProfit) >= 0 ? '+' : ''}{realMetrics.totalProfit}$
+                    </div>
+                  </div>
+                  <div className="bg-slate-950/50 p-4 rounded-xl border border-white/5 print:bg-slate-50 print:border-slate-200">
+                    <div className="text-slate-400 print:text-slate-500 text-sm mb-1">نسبة النجاح</div>
+                    <div className="text-xl font-bold text-white print:text-slate-900">{realMetrics.winRate}%</div>
+                  </div>
+                  <div className="bg-slate-950/50 p-4 rounded-xl border border-white/5 print:bg-slate-50 print:border-slate-200">
+                    <div className="text-slate-400 print:text-slate-500 text-sm mb-1">متوسط الربح</div>
+                    <div className="text-xl font-bold text-emerald-400 print:text-emerald-600">+{realMetrics.avgWin}$</div>
+                  </div>
+                  <div className="bg-slate-950/50 p-4 rounded-xl border border-white/5 print:bg-slate-50 print:border-slate-200">
+                    <div className="text-slate-400 print:text-slate-500 text-sm mb-1">متوسط الخسارة</div>
+                    <div className="text-xl font-bold text-red-400 print:text-red-600">{realMetrics.avgLoss}$</div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className="flex flex-col lg:flex-row gap-8 print:block print:space-y-8">
+              {/* Input Section */}
+              <div className="space-y-4 w-full lg:w-1/2">
+                <div className="print:hidden">
+                  <div className="flex items-center justify-between mb-3">
+                    <label className="block text-sm font-medium text-slate-300">إضافة نتيجة صفقة حقيقية ($)</label>
+                    {saveMessage && (
+                      <span className="text-emerald-400 text-xs bg-emerald-500/10 px-2 py-1 rounded-md border border-emerald-500/20">
+                        {saveMessage}
+                      </span>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                    <div className="space-y-1.5">
+                      <label className="block text-xs font-medium text-slate-400">رأس المال</label>
+                      <input 
+                        type="number" 
+                        value={newTradeCapital} 
+                        onChange={(e) => { setNewTradeCapital(e.target.value); setTradeInputError(''); }}
+                        placeholder="0"
+                        className="w-full px-3 py-2.5 bg-slate-950/50 border border-white/10 rounded-xl focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 text-white outline-none transition-all text-sm"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="block text-xs font-medium text-emerald-400">الربح</label>
+                      <input 
+                        type="number" 
+                        value={newTradeProfit} 
+                        onChange={(e) => { setNewTradeProfit(e.target.value); setNewTradeLoss(''); setTradeInputError(''); }}
+                        onKeyDown={(e) => e.key === 'Enter' && handleAddTrade()}
+                        placeholder="0"
+                        className="w-full px-3 py-2.5 bg-emerald-950/20 border border-emerald-500/20 rounded-xl focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 text-emerald-400 outline-none transition-all text-sm placeholder:text-emerald-700/50"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="block text-xs font-medium text-red-400">الخسارة</label>
+                      <input 
+                        type="number" 
+                        value={newTradeLoss} 
+                        onChange={(e) => { setNewTradeLoss(e.target.value); setNewTradeProfit(''); setTradeInputError(''); }}
+                        onKeyDown={(e) => e.key === 'Enter' && handleAddTrade()}
+                        placeholder="0"
+                        className="w-full px-3 py-2.5 bg-red-950/20 border border-red-500/20 rounded-xl focus:ring-2 focus:ring-red-500/50 focus:border-red-500 text-red-400 outline-none transition-all text-sm placeholder:text-red-700/50"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="block text-xs font-medium text-cyan-400">السحب</label>
+                      <input 
+                        type="text" 
+                        value={previewWithdrawn > 0 ? previewWithdrawn.toFixed(2) : ''} 
+                        readOnly
+                        placeholder="تلقائي"
+                        className="w-full px-3 py-2.5 bg-cyan-950/10 border border-cyan-500/10 rounded-xl text-cyan-500/50 outline-none text-sm cursor-not-allowed placeholder:text-cyan-800/50"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="block text-xs font-medium text-indigo-400">الأبقاء</label>
+                      <input 
+                        type="text" 
+                        value={previewKept !== 0 ? previewKept.toFixed(2) : ''} 
+                        readOnly
+                        placeholder="تلقائي"
+                        className="w-full px-3 py-2.5 bg-indigo-950/10 border border-indigo-500/10 rounded-xl text-indigo-500/50 outline-none text-sm cursor-not-allowed placeholder:text-indigo-800/50"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="block text-xs font-medium text-slate-400">المجموع</label>
+                      <input 
+                        type="text" 
+                        value={previewTotal > 0 ? previewTotal.toFixed(2) : ''} 
+                        readOnly
+                        placeholder="تلقائي"
+                        className="w-full px-3 py-2.5 bg-slate-950/30 border border-white/5 rounded-xl text-slate-500 outline-none text-sm cursor-not-allowed placeholder:text-slate-600"
+                      />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 mt-3">
+                    <button 
+                      onClick={handleAddTrade}
+                      className="w-full px-4 py-3 bg-purple-600 hover:bg-purple-500 text-white rounded-xl transition-all flex items-center justify-center gap-2 font-medium"
+                      title="إضافة الصفقة"
+                    >
+                      <Plus className="w-5 h-5" />
+                      <span>إضافة</span>
+                    </button>
+                    <button 
+                      onClick={handleSaveTrades}
+                      className="w-full px-4 py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl transition-all flex items-center justify-center gap-2 font-medium"
+                      title="حفظ الصفقات"
+                    >
+                      <Save className="w-5 h-5" />
+                      <span>حفظ</span>
+                    </button>
+                  </div>
+                  {tradeInputError && (
+                    <p className="text-red-400 text-xs mt-2">{tradeInputError}</p>
+                  )}
+                </div>
+
+                <div className="mt-4 flex items-center justify-between print:hidden">
+                  <button
+                    onClick={() => setShowRealTradesTable(!showRealTradesTable)}
+                    className="flex items-center gap-2 text-sm font-medium text-indigo-400 hover:text-indigo-300 transition-colors bg-indigo-500/10 hover:bg-indigo-500/20 px-3 py-2 rounded-lg"
+                  >
+                    <TableIcon className="w-4 h-4" />
+                    <span>سجل الصفقات الحقيقية</span>
+                    {showRealTradesTable ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                  </button>
+                  {enrichedActualTrades.length > 0 && (
+                    <span className="text-xs text-slate-400 bg-slate-900 px-2 py-1 rounded-md border border-white/5">
+                      {enrichedActualTrades.length} صفقة
+                    </span>
+                  )}
+                </div>
+
+                {(showRealTradesTable || typeof window !== 'undefined' && window.matchMedia('print').matches) && (
+                  <div className="mt-4 max-h-64 overflow-y-auto custom-scrollbar print:max-h-none print:overflow-visible rounded-xl border border-white/5 print:border-slate-200">
+                    <table className="w-full text-right text-sm">
+                      <thead className="bg-slate-900/80 print:bg-slate-100 text-slate-400 print:text-slate-500 sticky top-0 z-10 backdrop-blur-sm">
+                      <tr>
+                        <th className="px-4 py-3 font-medium">الصفقة</th>
+                        <th className="px-4 py-3 font-medium">رأس المال</th>
+                        <th className="px-4 py-3 font-medium">الربح</th>
+                        <th className="px-4 py-3 font-medium">الخسارة</th>
+                        <th className="px-4 py-3 font-medium">السحب</th>
+                        <th className="px-4 py-3 font-medium">الأبقاء</th>
+                        <th className="px-4 py-3 font-medium">المجموع</th>
+                        <th className="px-4 py-3 font-medium print:hidden"></th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/5 print:divide-slate-200 bg-slate-950/50 print:bg-white">
+                      {enrichedActualTrades.length === 0 ? (
+                        <tr>
+                          <td colSpan={8} className="px-4 py-8 text-center text-slate-500 print:hidden">
+                            لم تقم بإضافة أي صفقات حقيقية بعد.
+                          </td>
+                        </tr>
+                      ) : (
+                        enrichedActualTrades.map((trade, index) => {
+                          return (
+                            <tr key={index} className="hover:bg-white/[0.02] print:hover:bg-slate-50 transition-colors">
+                              <td className="px-4 py-3 text-slate-400 print:text-slate-500">{index + 1}</td>
+                              <td className="px-4 py-3 text-slate-300 print:text-slate-700">${trade.capital}</td>
+                              <td className="px-4 py-3 text-emerald-400 print:text-emerald-600 font-medium">
+                                {trade.profit > 0 ? `+${trade.profit}$` : '-'}
+                              </td>
+                              <td className="px-4 py-3 text-red-400 print:text-red-600 font-medium">
+                                {trade.loss > 0 ? `-${trade.loss}$` : '-'}
+                              </td>
+                              <td className="px-4 py-3 text-cyan-400 print:text-cyan-600">
+                                {trade.net > 0 ? `$${trade.withdrawn}` : '-'}
+                              </td>
+                              <td className="px-4 py-3 text-indigo-400 print:text-indigo-600">
+                                {trade.net > 0 ? `$${trade.kept}` : '-'}
+                              </td>
+                              <td className="px-4 py-3 text-slate-200 print:text-slate-800 font-bold">
+                                ${trade.currentCap}
+                              </td>
+                              <td className="px-4 py-3 print:hidden text-left">
+                                <button onClick={() => handleRemoveTrade(index)} className="text-slate-500 hover:text-red-400 transition-colors p-1">
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+                )}
+
+                {/* Progress Bar */}
+                {realMetrics && (
+                  <div className="bg-slate-950/50 p-5 rounded-2xl border border-white/5 print:bg-slate-50 print:border-slate-200 mt-6">
+                    <div className="flex justify-between items-end mb-3">
+                      <div>
+                        <div className="text-slate-400 print:text-slate-500 text-sm mb-1">
+                          التقدم نحو الهدف ({goalMode === 'target_capital' ? 'رأس المال' : 'عدد الصفقات'})
+                        </div>
+                        <div className="text-xl font-bold text-white print:text-slate-900">
+                          {goalMode === 'target_capital' 
+                            ? `${(enrichedActualTrades.length > 0 ? enrichedActualTrades[enrichedActualTrades.length - 1].currentCap : initialCapital).toFixed(2)}$ / ${targetCapital}$`
+                            : `${actualTrades.length} / ${numberOfTrades} صفقة`
+                          }
+                        </div>
+                      </div>
+                      <div className="text-lg font-bold text-indigo-400 print:text-indigo-600">
+                        {goalMode === 'target_capital'
+                          ? Math.max(0, Math.min(100, (((enrichedActualTrades.length > 0 ? enrichedActualTrades[enrichedActualTrades.length - 1].currentCap : initialCapital) - initialCapital) / (targetCapital - initialCapital)) * 100)).toFixed(1)
+                          : Math.max(0, Math.min(100, (actualTrades.length / numberOfTrades) * 100)).toFixed(1)
+                        }%
+                      </div>
+                    </div>
+                    <div className="h-3 bg-slate-900 print:bg-slate-200 rounded-full overflow-hidden">
+                      <div 
+                        className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 transition-all duration-1000 ease-out"
+                        style={{ 
+                          width: `${goalMode === 'target_capital'
+                            ? Math.max(0, Math.min(100, (((enrichedActualTrades.length > 0 ? enrichedActualTrades[enrichedActualTrades.length - 1].currentCap : initialCapital) - initialCapital) / (targetCapital - initialCapital)) * 100))
+                            : Math.max(0, Math.min(100, (actualTrades.length / numberOfTrades) * 100))
+                          }%` 
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {actualTrades.length > 0 && (
+                  <button 
+                    onClick={analyzePerformance}
+                    disabled={isAnalyzing}
+                    className="print:hidden w-full mt-4 py-3 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-medium rounded-xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-purple-500/25 disabled:opacity-70"
+                  >
+                    {isAnalyzing ? <Loader2 className="w-5 h-5 animate-spin" /> : <BrainCircuit className="w-5 h-5" />}
+                    {isAnalyzing ? 'جاري التحليل...' : 'حلل أدائي بالذكاء الاصطناعي'}
+                  </button>
+                )}
+              </div>
+
+              {/* AI Result Section */}
+              <div className="w-full lg:w-1/2 bg-slate-950/50 rounded-2xl p-5 border border-white/5 min-h-[250px] overflow-y-auto max-h-[400px] print:max-h-none print:overflow-visible print:bg-transparent print:border-none print:p-0 flex flex-col">
+                {aiAnalysis ? (
+                  <div className="prose prose-invert print:prose-slate prose-sm max-w-none prose-p:leading-relaxed prose-headings:text-purple-300 print:prose-headings:text-purple-700 prose-a:text-purple-400 print:text-slate-800">
+                    <Markdown>{aiAnalysis}</Markdown>
+                  </div>
+                ) : (
+                  <div className="flex-1 flex flex-col items-center justify-center text-slate-500 space-y-3 print:hidden py-10">
+                    <BrainCircuit className="w-10 h-10 opacity-20" />
+                    <p className="text-sm text-center max-w-[250px]">
+                      أضف صفقاتك الحقيقية واضغط على زر التحليل للحصول على نصائح مخصصة من الذكاء الاصطناعي.
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Data Table */}
         {data.length > 0 && (
-          <div className="bg-slate-900/50 backdrop-blur-xl rounded-3xl shadow-2xl border border-white/5 overflow-hidden print:bg-white print:shadow-none print:border-none">
-            <div className="p-6 border-b border-white/5 print:border-slate-200">
-              <h3 className="text-lg font-semibold text-white print:text-slate-900">تفاصيل الصفقات</h3>
-            </div>
-            <div className="overflow-x-auto">
+          <div className="space-y-4">
+            <button
+              onClick={() => setShowTable(!showTable)}
+              className="w-full flex items-center justify-between bg-slate-900/50 backdrop-blur-xl p-6 rounded-3xl shadow-lg border border-white/5 hover:bg-slate-800/50 transition-all print:hidden"
+            >
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-indigo-500/20 rounded-lg text-indigo-400">
+                  <TableIcon className="w-5 h-5" />
+                </div>
+                <span className="text-lg font-semibold text-white">جدول تفاصيل الصفقات</span>
+              </div>
+              {showTable ? <ChevronUp className="w-5 h-5 text-slate-400" /> : <ChevronDown className="w-5 h-5 text-slate-400" />}
+            </button>
+
+            <div className={`${showTable ? 'block' : 'hidden print:block'} bg-slate-900/50 backdrop-blur-xl rounded-3xl shadow-2xl border border-white/5 overflow-hidden print:bg-white print:shadow-none print:border-none`}>
+              <div className="p-6 border-b border-white/5 print:border-slate-200 hidden print:block">
+                <h3 className="text-lg font-semibold text-white print:text-slate-900">تفاصيل الصفقات</h3>
+              </div>
+              <div className="overflow-x-auto">
               <table className="w-full text-right">
                 <thead className="bg-slate-950/50 print:bg-slate-50 text-slate-400 print:text-slate-500 text-sm">
                   <tr>
@@ -386,9 +905,44 @@ export default function App() {
               </table>
             </div>
           </div>
+          </div>
         )}
 
+        {/* Footer Attribution */}
+        <footer className="mt-12 pb-8 text-center text-slate-500 print:text-slate-400 text-sm font-medium flex items-center justify-center gap-2">
+          <span>فكرة وتصميم</span>
+          <span className="text-indigo-400 print:text-indigo-600 font-bold">عبدالله الشهري</span>
+        </footer>
+
       </div>
+
+      {/* Delete Confirmation Modal */}
+      {tradeToDelete !== null && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm print:hidden">
+          <div className="bg-slate-900 border border-white/10 rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div className="p-6">
+              <h3 className="text-xl font-bold text-white mb-2">حذف الصفقة</h3>
+              <p className="text-slate-400 text-sm">
+                هل أنت متأكد من أنك تريد حذف هذه الصفقة؟ لا يمكن التراجع عن هذا الإجراء.
+              </p>
+            </div>
+            <div className="bg-slate-950/50 px-6 py-4 flex items-center justify-end gap-3 border-t border-white/5">
+              <button
+                onClick={cancelRemoveTrade}
+                className="px-4 py-2 text-sm font-medium text-slate-300 hover:text-white transition-colors"
+              >
+                إلغاء
+              </button>
+              <button
+                onClick={confirmRemoveTrade}
+                className="px-4 py-2 text-sm font-medium bg-red-500/10 text-red-400 hover:bg-red-500 hover:text-white rounded-lg transition-all"
+              >
+                تأكيد الحذف
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
