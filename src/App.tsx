@@ -5,7 +5,7 @@
 
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, AreaChart, Area } from 'recharts';
-import { Calculator, Target, ArrowUpRight, Wallet, TrendingUp, AlertCircle, Calendar, Printer, Table as TableIcon, ChevronDown, ChevronUp, BrainCircuit, Plus, Trash2, Loader2, Save } from 'lucide-react';
+import { Calculator, Target, ArrowUpRight, Wallet, TrendingUp, TrendingDown, AlertCircle, Calendar, Printer, Table as TableIcon, ChevronDown, ChevronUp, BrainCircuit, Plus, Trash2, Loader2, Save } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
 import Markdown from 'react-markdown';
 
@@ -13,6 +13,7 @@ interface RealTrade {
   capital: number;
   profit: number;
   loss: number;
+  date?: string;
   withdrawn?: number;
   kept?: number;
   total?: number;
@@ -31,6 +32,7 @@ export default function App() {
 
   // Real Trades & AI State
   const [actualTrades, setActualTrades] = useState<RealTrade[]>([]);
+  const [newTradeDate, setNewTradeDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [newTradeCapital, setNewTradeCapital] = useState<string>('');
   const [newTradeProfit, setNewTradeProfit] = useState<string>('');
   const [newTradeLoss, setNewTradeLoss] = useState<string>('');
@@ -68,7 +70,27 @@ export default function App() {
   const [tradeToDelete, setTradeToDelete] = useState<number | null>(null);
   const [showRealTradesTable, setShowRealTradesTable] = useState<boolean>(false);
   const [saveMessage, setSaveMessage] = useState<string>('');
+  const [exchangeRate, setExchangeRate] = useState<number>(3.75);
+  const [inputCurrency, setInputCurrency] = useState<'USD' | 'SAR'>('USD');
+  const [displayCapitalStr, setDisplayCapitalStr] = useState<string>('1000');
   const isLoaded = useRef(false);
+
+  useEffect(() => {
+    if (inputCurrency === 'USD') {
+      setDisplayCapitalStr(initialCapital.toString());
+    } else {
+      setDisplayCapitalStr((initialCapital * exchangeRate).toFixed(2).replace(/\.00$/, ''));
+    }
+  }, [inputCurrency, exchangeRate]);
+
+  const handleCapitalChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const valStr = e.target.value;
+    setDisplayCapitalStr(valStr);
+    const val = parseFloat(valStr);
+    if (!isNaN(val)) {
+      setInitialCapital(inputCurrency === 'USD' ? val : val / exchangeRate);
+    }
+  };
 
   // Load saved trades on mount
   useEffect(() => {
@@ -80,6 +102,10 @@ export default function App() {
         console.error('Failed to parse saved trades');
       }
     }
+    const savedRate = localStorage.getItem('trading_exchange_rate');
+    if (savedRate) {
+      setExchangeRate(parseFloat(savedRate) || 3.75);
+    }
     isLoaded.current = true;
   }, []);
 
@@ -89,6 +115,12 @@ export default function App() {
       localStorage.setItem('trading_actual_trades', JSON.stringify(actualTrades));
     }
   }, [actualTrades]);
+
+  useEffect(() => {
+    if (isLoaded.current) {
+      localStorage.setItem('trading_exchange_rate', exchangeRate.toString());
+    }
+  }, [exchangeRate]);
 
   const handleSaveTrades = () => {
     localStorage.setItem('trading_actual_trades', JSON.stringify(actualTrades));
@@ -166,6 +198,12 @@ export default function App() {
   }
   const previewTotal = previewCapital + previewKept;
 
+  // Calculate remaining trades based on current inputs
+  let estimatedRemainingTrades: number | null = null;
+  if (goalMode === 'target_capital' && previewKept > 0 && previewCapital < targetCapital) {
+    estimatedRemainingTrades = Math.ceil((targetCapital - previewCapital) / previewKept);
+  }
+
   const handleAddTrade = () => {
     if (newTradeCapital === '' || (newTradeProfit === '' && newTradeLoss === '')) {
       setTradeInputError('الرجاء إدخال رأس المال وقيمة الربح أو الخسارة');
@@ -175,11 +213,13 @@ export default function App() {
     const capital = parseFloat(newTradeCapital) || 0;
     const profit = parseFloat(newTradeProfit) || 0;
     const loss = parseFloat(newTradeLoss) || 0;
+    const date = newTradeDate || new Date().toISOString().split('T')[0];
     
-    setActualTrades([...actualTrades, { capital, profit, loss }]);
+    setActualTrades([...actualTrades, { capital, profit, loss, date }]);
     setNewTradeProfit('');
     setNewTradeLoss('');
     setTradeInputError('');
+    setNewTradeDate(new Date().toISOString().split('T')[0]);
   };
 
   const handleRemoveTrade = (index: number) => {
@@ -383,14 +423,25 @@ export default function App() {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1.5">مبلغ التداول الأساسي ($)</label>
-                <input 
-                  type="number" 
-                  value={initialCapital} 
-                  onChange={(e) => setInitialCapital(Number(e.target.value))}
-                  className="w-full px-4 py-3 bg-slate-950/50 border border-white/10 rounded-xl focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 text-white outline-none transition-all"
-                  min="1"
-                />
+                <label className="block text-sm font-medium text-slate-300 mb-1.5">مبلغ التداول الأساسي</label>
+                <div className="flex bg-slate-950/50 border border-white/10 rounded-xl overflow-hidden focus-within:ring-2 focus-within:ring-indigo-500/50 focus-within:border-indigo-500 transition-all">
+                  <input 
+                    type="number" 
+                    value={displayCapitalStr} 
+                    onChange={handleCapitalChange}
+                    className="w-full px-4 py-3 bg-transparent text-white outline-none"
+                    min="1"
+                    step="any"
+                  />
+                  <select
+                    value={inputCurrency}
+                    onChange={(e) => setInputCurrency(e.target.value as 'USD' | 'SAR')}
+                    className="bg-slate-900 text-slate-300 px-3 py-3 border-r border-white/10 outline-none cursor-pointer"
+                  >
+                    <option value="USD">USD ($)</option>
+                    <option value="SAR">SAR (ر.س)</option>
+                  </select>
+                </div>
               </div>
               
               {goalMode === 'target_capital' ? (
@@ -398,7 +449,7 @@ export default function App() {
                   <label className="block text-sm font-medium text-slate-300 mb-1.5">الهدف المراد الوصول إليه ($)</label>
                   <input 
                     type="number" 
-                    value={targetCapital} 
+                    value={targetCapital || ''} 
                     onChange={(e) => setTargetCapital(Number(e.target.value))}
                     className="w-full px-4 py-3 bg-slate-950/50 border border-white/10 rounded-xl focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 text-white outline-none transition-all"
                     min="1"
@@ -409,7 +460,7 @@ export default function App() {
                   <label className="block text-sm font-medium text-slate-300 mb-1.5">عدد الصفقات المستهدف</label>
                   <input 
                     type="number" 
-                    value={numberOfTrades} 
+                    value={numberOfTrades || ''} 
                     onChange={(e) => setNumberOfTrades(Number(e.target.value))}
                     className="w-full px-4 py-3 bg-slate-950/50 border border-white/10 rounded-xl focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 text-white outline-none transition-all"
                     min="1"
@@ -421,7 +472,7 @@ export default function App() {
                 <label className="block text-sm font-medium text-slate-300 mb-1.5">متوسط عدد الصفقات في اليوم</label>
                 <input 
                   type="number" 
-                  value={tradesPerDay} 
+                  value={tradesPerDay || ''} 
                   onChange={(e) => setTradesPerDay(Number(e.target.value))}
                   className="w-full px-4 py-3 bg-slate-950/50 border border-white/10 rounded-xl focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 text-white outline-none transition-all"
                   min="0.1"
@@ -433,7 +484,7 @@ export default function App() {
                 <label className="block text-sm font-medium text-slate-300 mb-1.5">نسبة الربح لكل صفقة/يوم (%)</label>
                 <input 
                   type="number" 
-                  value={profitPercentage} 
+                  value={profitPercentage || ''} 
                   onChange={(e) => setProfitPercentage(Number(e.target.value))}
                   className="w-full px-4 py-3 bg-slate-950/50 border border-white/10 rounded-xl focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 text-white outline-none transition-all"
                   min="0.1"
@@ -578,14 +629,60 @@ export default function App() {
         {/* Real Trades & AI Analysis */}
         {data.length > 0 && (
           <div className="bg-slate-900/50 backdrop-blur-xl p-6 rounded-3xl shadow-2xl border border-white/5 print:bg-white print:shadow-none print:border-none print:p-0 print:mt-8">
-            <h3 className="text-lg font-semibold mb-6 text-white print:text-slate-900 flex items-center gap-2">
-              <BrainCircuit className="w-5 h-5 text-purple-400 print:text-purple-600" />
-              تتبع الصفقات الحقيقية وتحليل الذكاء الاصطناعي
-            </h3>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-6 gap-4">
+              <h3 className="text-lg font-semibold text-white print:text-slate-900 flex items-center gap-2">
+                <BrainCircuit className="w-5 h-5 text-purple-400 print:text-purple-600" />
+                تتبع الصفقات الحقيقية وتحليل الذكاء الاصطناعي
+              </h3>
+              <div className="flex items-center gap-2 print:hidden bg-slate-950/50 p-2 rounded-xl border border-white/5">
+                <label className="text-xs font-medium text-slate-400">سعر الصرف (ر.س):</label>
+                <input 
+                  type="number" 
+                  value={exchangeRate || ''}
+                  onChange={(e) => setExchangeRate(parseFloat(e.target.value) || 0)}
+                  className="w-20 px-2 py-1 bg-slate-900 border border-white/10 rounded-lg focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 text-white outline-none transition-all text-sm text-center"
+                  step="0.01"
+                />
+              </div>
+            </div>
             
             {/* Summary Section */}
             {realMetrics && (
               <div className="mb-8">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                  <div className="bg-slate-950/50 p-5 rounded-2xl border border-white/5 print:bg-slate-50 print:border-slate-200 relative overflow-hidden">
+                    <div className="absolute -right-4 -top-4 w-16 h-16 bg-indigo-500/10 rounded-full blur-xl print:hidden"></div>
+                    <div className="text-slate-400 print:text-slate-500 text-sm mb-1 relative z-10">الإيداع</div>
+                    <div className="flex flex-col gap-1 relative z-10">
+                      <div className="text-2xl font-bold text-white print:text-slate-900">${initialCapital.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+                      <div className="text-sm font-medium text-slate-500 print:text-slate-400">{(initialCapital * exchangeRate).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})} ر.س</div>
+                    </div>
+                  </div>
+                  <div className="bg-slate-950/50 p-5 rounded-2xl border border-white/5 print:bg-slate-50 print:border-slate-200 relative overflow-hidden">
+                    <div className="absolute -right-4 -top-4 w-16 h-16 bg-cyan-500/10 rounded-full blur-xl print:hidden"></div>
+                    <div className="text-slate-400 print:text-slate-500 text-sm mb-1 relative z-10">السحب</div>
+                    <div className="flex flex-col gap-1 relative z-10">
+                      <div className="text-2xl font-bold text-cyan-400 print:text-cyan-600">
+                        ${enrichedActualTrades.reduce((sum, t) => sum + (t.withdrawn || 0), 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                      </div>
+                      <div className="text-sm font-medium text-cyan-700/70 print:text-cyan-500/70">
+                        {(enrichedActualTrades.reduce((sum, t) => sum + (t.withdrawn || 0), 0) * exchangeRate).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})} ر.س
+                      </div>
+                    </div>
+                  </div>
+                  <div className="bg-slate-950/50 p-5 rounded-2xl border border-white/5 print:bg-slate-50 print:border-slate-200 relative overflow-hidden">
+                    <div className="absolute -right-4 -top-4 w-16 h-16 bg-emerald-500/10 rounded-full blur-xl print:hidden"></div>
+                    <div className="text-slate-400 print:text-slate-500 text-sm mb-1 relative z-10">المتوفر</div>
+                    <div className="flex flex-col gap-1 relative z-10">
+                      <div className="text-2xl font-bold text-emerald-400 print:text-emerald-600">
+                        ${(enrichedActualTrades.length > 0 ? enrichedActualTrades[enrichedActualTrades.length - 1].currentCap : initialCapital).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                      </div>
+                      <div className="text-sm font-medium text-emerald-700/70 print:text-emerald-500/70">
+                        {((enrichedActualTrades.length > 0 ? enrichedActualTrades[enrichedActualTrades.length - 1].currentCap : initialCapital) * exchangeRate).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})} ر.س
+                      </div>
+                    </div>
+                  </div>
+                </div>
                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 print:grid-cols-5 print:gap-4">
                   <div className="bg-slate-950/50 p-4 rounded-xl border border-white/5 print:bg-slate-50 print:border-slate-200">
                     <div className="text-slate-400 print:text-slate-500 text-sm mb-1">إجمالي الصفقات</div>
@@ -593,7 +690,7 @@ export default function App() {
                   </div>
                   <div className="bg-slate-950/50 p-4 rounded-xl border border-white/5 print:bg-slate-50 print:border-slate-200">
                     <div className="text-slate-400 print:text-slate-500 text-sm mb-1">إجمالي الربح/الخسارة</div>
-                    <div className={`text-xl font-bold ${Number(realMetrics.totalProfit) >= 0 ? 'text-emerald-400 print:text-emerald-600' : 'text-red-400 print:text-red-600'}`}>
+                    <div className={`text-xl font-bold ${Number(realMetrics.totalProfit) >= 0 ? 'text-emerald-400 print:text-emerald-600' : 'text-blue-500 print:text-blue-600'}`}>
                       {Number(realMetrics.totalProfit) >= 0 ? '+' : ''}{realMetrics.totalProfit}$
                     </div>
                   </div>
@@ -607,7 +704,7 @@ export default function App() {
                   </div>
                   <div className="bg-slate-950/50 p-4 rounded-xl border border-white/5 print:bg-slate-50 print:border-slate-200">
                     <div className="text-slate-400 print:text-slate-500 text-sm mb-1">متوسط الخسارة</div>
-                    <div className="text-xl font-bold text-red-400 print:text-red-600">{realMetrics.avgLoss}$</div>
+                    <div className="text-xl font-bold text-blue-500 print:text-blue-600">{realMetrics.avgLoss}$</div>
                   </div>
                 </div>
               </div>
@@ -625,7 +722,16 @@ export default function App() {
                       </span>
                     )}
                   </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+                    <div className="space-y-1.5">
+                      <label className="block text-xs font-medium text-slate-400">التاريخ</label>
+                      <input 
+                        type="date" 
+                        value={newTradeDate} 
+                        onChange={(e) => { setNewTradeDate(e.target.value); setTradeInputError(''); }}
+                        className="w-full px-3 py-2.5 bg-slate-950/50 border border-white/10 rounded-xl focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 text-white outline-none transition-all text-sm"
+                      />
+                    </div>
                     <div className="space-y-1.5">
                       <label className="block text-xs font-medium text-slate-400">رأس المال</label>
                       <input 
@@ -689,6 +795,57 @@ export default function App() {
                       />
                     </div>
                   </div>
+                  
+                  {(previewProfit > 0 || previewLoss > 0) && previewCapital > 0 && (
+                    <div className={`mt-3 border rounded-xl p-3 flex items-center gap-3 ${
+                      previewProfit > 0 
+                        ? ((previewProfit / previewCapital) * 100) >= profitPercentage 
+                          ? 'bg-emerald-500/10 border-emerald-500/20' 
+                          : 'bg-yellow-500/10 border-yellow-500/20'
+                        : 'bg-red-500/10 border-red-500/20'
+                    }`}>
+                      <div className={`p-2 rounded-lg ${
+                        previewProfit > 0 
+                          ? ((previewProfit / previewCapital) * 100) >= profitPercentage 
+                            ? 'bg-emerald-500/20 text-emerald-400' 
+                            : 'bg-yellow-500/20 text-yellow-400'
+                          : 'bg-red-500/20 text-red-400'
+                      }`}>
+                        {previewProfit > 0 ? <TrendingUp className="w-4 h-4" /> : <TrendingDown className="w-4 h-4" />}
+                      </div>
+                      <div className="text-sm text-slate-300">
+                        {previewProfit > 0 ? (
+                          <>
+                            نسبة الربح المحققة: <span className={`font-bold ${((previewProfit / previewCapital) * 100) >= profitPercentage ? 'text-emerald-400' : 'text-yellow-400'}`}>{((previewProfit / previewCapital) * 100).toFixed(2)}%</span>
+                            {' '}
+                            {((previewProfit / previewCapital) * 100) >= profitPercentage ? (
+                              <span className="text-emerald-400/80">(متوافق مع الهدف الأساسي {profitPercentage}%)</span>
+                            ) : (
+                              <span className="text-yellow-400/80">(أقل من الهدف الأساسي {profitPercentage}%)</span>
+                            )}
+                          </>
+                        ) : (
+                          <>
+                            نسبة الخسارة المحققة: <span className="font-bold text-red-400">{((previewLoss / previewCapital) * 100).toFixed(2)}%</span>
+                            {' '}
+                            <span className="text-red-400/80">(عكس الهدف الأساسي للربح {profitPercentage}%)</span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {estimatedRemainingTrades !== null && (
+                    <div className="mt-3 bg-indigo-500/10 border border-indigo-500/20 rounded-xl p-3 flex items-center gap-3">
+                      <div className="bg-indigo-500/20 p-2 rounded-lg">
+                        <Target className="w-4 h-4 text-indigo-400" />
+                      </div>
+                      <div className="text-sm text-slate-300">
+                        بناءً على هذه المعطيات، تحتاج إلى <span className="font-bold text-indigo-400">{estimatedRemainingTrades}</span> صفقات إضافية للوصول إلى الهدف ({targetCapital}$).
+                      </div>
+                    </div>
+                  )}
+
                   <div className="grid grid-cols-2 gap-3 mt-3">
                     <button 
                       onClick={handleAddTrade}
@@ -729,50 +886,55 @@ export default function App() {
                 </div>
 
                 {(showRealTradesTable || typeof window !== 'undefined' && window.matchMedia('print').matches) && (
-                  <div className="mt-4 max-h-64 overflow-y-auto custom-scrollbar print:max-h-none print:overflow-visible rounded-xl border border-white/5 print:border-slate-200">
-                    <table className="w-full text-right text-sm">
-                      <thead className="bg-slate-900/80 print:bg-slate-100 text-slate-400 print:text-slate-500 sticky top-0 z-10 backdrop-blur-sm">
+                  <div className="mt-4 max-h-80 overflow-y-auto overflow-x-auto custom-scrollbar print:max-h-none print:overflow-visible rounded-xl border border-white/5 print:border-slate-200 shadow-inner bg-slate-950/20">
+                    <table className="w-full text-right text-sm whitespace-nowrap">
+                      <thead className="bg-slate-900/90 print:bg-slate-100 text-slate-400 print:text-slate-500 sticky top-0 z-10 backdrop-blur-md shadow-sm">
                       <tr>
-                        <th className="px-4 py-3 font-medium">الصفقة</th>
-                        <th className="px-4 py-3 font-medium">رأس المال</th>
-                        <th className="px-4 py-3 font-medium">الربح</th>
-                        <th className="px-4 py-3 font-medium">الخسارة</th>
-                        <th className="px-4 py-3 font-medium">السحب</th>
-                        <th className="px-4 py-3 font-medium">الأبقاء</th>
-                        <th className="px-4 py-3 font-medium">المجموع</th>
-                        <th className="px-4 py-3 font-medium print:hidden"></th>
+                        <th className="px-5 py-4 font-semibold">الصفقة</th>
+                        <th className="px-5 py-4 font-semibold">التاريخ</th>
+                        <th className="px-5 py-4 font-semibold">رأس المال</th>
+                        <th className="px-5 py-4 font-semibold">الربح</th>
+                        <th className="px-5 py-4 font-semibold">الخسارة</th>
+                        <th className="px-5 py-4 font-semibold">السحب</th>
+                        <th className="px-5 py-4 font-semibold">الأبقاء</th>
+                        <th className="px-5 py-4 font-semibold">المجموع</th>
+                        <th className="px-5 py-4 font-semibold print:hidden"></th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-white/5 print:divide-slate-200 bg-slate-950/50 print:bg-white">
+                    <tbody className="divide-y divide-white/5 print:divide-slate-200 bg-transparent print:bg-white">
                       {enrichedActualTrades.length === 0 ? (
                         <tr>
-                          <td colSpan={8} className="px-4 py-8 text-center text-slate-500 print:hidden">
-                            لم تقم بإضافة أي صفقات حقيقية بعد.
+                          <td colSpan={9} className="px-5 py-10 text-center text-slate-500 print:hidden">
+                            <div className="flex flex-col items-center justify-center gap-2">
+                              <TableIcon className="w-8 h-8 opacity-20" />
+                              <span>لم تقم بإضافة أي صفقات حقيقية بعد.</span>
+                            </div>
                           </td>
                         </tr>
                       ) : (
                         enrichedActualTrades.map((trade, index) => {
                           return (
-                            <tr key={index} className="hover:bg-white/[0.02] print:hover:bg-slate-50 transition-colors">
-                              <td className="px-4 py-3 text-slate-400 print:text-slate-500">{index + 1}</td>
-                              <td className="px-4 py-3 text-slate-300 print:text-slate-700">${trade.capital}</td>
-                              <td className="px-4 py-3 text-emerald-400 print:text-emerald-600 font-medium">
+                            <tr key={index} className="even:bg-slate-900/30 odd:bg-slate-950/50 hover:bg-white/[0.04] print:even:bg-slate-50 print:odd:bg-white transition-colors">
+                              <td className="px-5 py-3.5 text-slate-400 print:text-slate-500">{index + 1}</td>
+                              <td className="px-5 py-3.5 text-slate-400 print:text-slate-500">{trade.date || '-'}</td>
+                              <td className="px-5 py-3.5 text-slate-300 print:text-slate-700">${trade.capital}</td>
+                              <td className="px-5 py-3.5 text-emerald-400 print:text-emerald-600 font-bold text-lg">
                                 {trade.profit > 0 ? `+${trade.profit}$` : '-'}
                               </td>
-                              <td className="px-4 py-3 text-red-400 print:text-red-600 font-medium">
+                              <td className="px-5 py-3.5 text-blue-500 print:text-blue-600 font-bold text-lg">
                                 {trade.loss > 0 ? `-${trade.loss}$` : '-'}
                               </td>
-                              <td className="px-4 py-3 text-cyan-400 print:text-cyan-600">
+                              <td className="px-5 py-3.5 text-cyan-400 print:text-cyan-600">
                                 {trade.net > 0 ? `$${trade.withdrawn}` : '-'}
                               </td>
-                              <td className="px-4 py-3 text-indigo-400 print:text-indigo-600">
+                              <td className="px-5 py-3.5 text-indigo-400 print:text-indigo-600">
                                 {trade.net > 0 ? `$${trade.kept}` : '-'}
                               </td>
-                              <td className="px-4 py-3 text-slate-200 print:text-slate-800 font-bold">
+                              <td className="px-5 py-3.5 text-slate-200 print:text-slate-800 font-bold text-lg">
                                 ${trade.currentCap}
                               </td>
-                              <td className="px-4 py-3 print:hidden text-left">
-                                <button onClick={() => handleRemoveTrade(index)} className="text-slate-500 hover:text-red-400 transition-colors p-1">
+                              <td className="px-5 py-3.5 print:hidden text-left">
+                                <button onClick={() => handleRemoveTrade(index)} className="text-slate-500 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-colors p-2">
                                   <Trash2 className="w-4 h-4" />
                                 </button>
                               </td>
