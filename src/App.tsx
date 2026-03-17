@@ -152,7 +152,8 @@ export default function App() {
         }
       }
 
-      currentCap = trade.total !== undefined ? trade.total : currentCap + kept;
+      const baseCapital = trade.capital !== undefined ? trade.capital : currentCap;
+      currentCap = trade.total !== undefined ? trade.total : baseCapital + kept;
 
       return {
         ...trade,
@@ -215,7 +216,15 @@ export default function App() {
     const loss = parseFloat(newTradeLoss) || 0;
     const date = newTradeDate || new Date().toISOString().split('T')[0];
     
-    setActualTrades([...actualTrades, { capital, profit, loss, date }]);
+    setActualTrades([...actualTrades, { 
+      capital, 
+      profit, 
+      loss, 
+      date,
+      withdrawn: previewWithdrawn,
+      kept: previewKept,
+      total: previewTotal
+    }]);
     setNewTradeProfit('');
     setNewTradeLoss('');
     setTradeInputError('');
@@ -241,6 +250,9 @@ export default function App() {
     if (actualTrades.length === 0) return;
     setIsAnalyzing(true);
     try {
+      if (!process.env.GEMINI_API_KEY) {
+        throw new Error('مفتاح API غير متوفر');
+      }
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       
       const theoreticalSubset = data.slice(1, actualTrades.length + 1);
@@ -266,14 +278,14 @@ export default function App() {
       `;
 
       const response = await ai.models.generateContent({
-        model: "gemini-3.1-pro-preview",
+        model: "gemini-3-flash-preview",
         contents: prompt,
       });
 
       setAiAnalysis(response.text || 'لم يتم استلام تحليل.');
-    } catch (error) {
+    } catch (error: any) {
       console.error(error);
-      setAiAnalysis('حدث خطأ أثناء تحليل البيانات. يرجى المحاولة مرة أخرى.');
+      setAiAnalysis(`حدث خطأ أثناء تحليل البيانات: ${error.message || 'خطأ غير معروف'}. يرجى المحاولة مرة أخرى.`);
     } finally {
       setIsAnalyzing(false);
     }
@@ -326,6 +338,12 @@ export default function App() {
 
     return result;
   }, [initialCapital, targetCapital, profitPercentage, withdrawalPercentage, calculationMode, goalMode, numberOfTrades, tradesPerDay]);
+
+  const chartData = useMemo(() => {
+    if (data.length <= 100) return data;
+    const step = Math.ceil(data.length / 100);
+    return data.filter((_, index) => index % step === 0 || index === data.length - 1);
+  }, [data]);
 
   const isPossible = withdrawalPercentage < 100 && profitPercentage > 0;
   const reachedTarget = goalMode === 'target_capital' && data.length > 0 && data[data.length - 1].capital >= targetCapital;
@@ -594,7 +612,7 @@ export default function App() {
                 <h3 className="text-lg font-semibold mb-6 text-white print:text-slate-900">نمو رأس المال والمسحوبات</h3>
                 <div className="h-80 w-full" dir="ltr">
                   <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={data} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
+                    <AreaChart data={chartData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
                       <defs>
                         <linearGradient id="colorCapital" x1="0" y1="0" x2="0" y2="1">
                           <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.4}/>
@@ -651,16 +669,8 @@ export default function App() {
               <div className="mb-8">
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
                   <div className="bg-slate-950/50 p-5 rounded-2xl border border-white/5 print:bg-slate-50 print:border-slate-200 relative overflow-hidden">
-                    <div className="absolute -right-4 -top-4 w-16 h-16 bg-indigo-500/10 rounded-full blur-xl print:hidden"></div>
-                    <div className="text-slate-400 print:text-slate-500 text-sm mb-1 relative z-10">الإيداع</div>
-                    <div className="flex flex-col gap-1 relative z-10">
-                      <div className="text-2xl font-bold text-white print:text-slate-900">${initialCapital.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
-                      <div className="text-sm font-medium text-slate-500 print:text-slate-400">{(initialCapital * exchangeRate).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})} ر.س</div>
-                    </div>
-                  </div>
-                  <div className="bg-slate-950/50 p-5 rounded-2xl border border-white/5 print:bg-slate-50 print:border-slate-200 relative overflow-hidden">
                     <div className="absolute -right-4 -top-4 w-16 h-16 bg-cyan-500/10 rounded-full blur-xl print:hidden"></div>
-                    <div className="text-slate-400 print:text-slate-500 text-sm mb-1 relative z-10">السحب</div>
+                    <div className="text-slate-400 print:text-slate-500 text-sm mb-1 relative z-10">المسحوبات</div>
                     <div className="flex flex-col gap-1 relative z-10">
                       <div className="text-2xl font-bold text-cyan-400 print:text-cyan-600">
                         ${enrichedActualTrades.reduce((sum, t) => sum + (t.withdrawn || 0), 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
@@ -671,8 +681,20 @@ export default function App() {
                     </div>
                   </div>
                   <div className="bg-slate-950/50 p-5 rounded-2xl border border-white/5 print:bg-slate-50 print:border-slate-200 relative overflow-hidden">
+                    <div className="absolute -right-4 -top-4 w-16 h-16 bg-indigo-500/10 rounded-full blur-xl print:hidden"></div>
+                    <div className="text-slate-400 print:text-slate-500 text-sm mb-1 relative z-10">الإبقاء</div>
+                    <div className="flex flex-col gap-1 relative z-10">
+                      <div className="text-2xl font-bold text-indigo-400 print:text-indigo-600">
+                        ${enrichedActualTrades.reduce((sum, t) => sum + (t.kept || 0), 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                      </div>
+                      <div className="text-sm font-medium text-indigo-700/70 print:text-indigo-500/70">
+                        {(enrichedActualTrades.reduce((sum, t) => sum + (t.kept || 0), 0) * exchangeRate).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})} ر.س
+                      </div>
+                    </div>
+                  </div>
+                  <div className="bg-slate-950/50 p-5 rounded-2xl border border-white/5 print:bg-slate-50 print:border-slate-200 relative overflow-hidden">
                     <div className="absolute -right-4 -top-4 w-16 h-16 bg-emerald-500/10 rounded-full blur-xl print:hidden"></div>
-                    <div className="text-slate-400 print:text-slate-500 text-sm mb-1 relative z-10">المتوفر</div>
+                    <div className="text-slate-400 print:text-slate-500 text-sm mb-1 relative z-10">رأس المال</div>
                     <div className="flex flex-col gap-1 relative z-10">
                       <div className="text-2xl font-bold text-emerald-400 print:text-emerald-600">
                         ${(enrichedActualTrades.length > 0 ? enrichedActualTrades[enrichedActualTrades.length - 1].currentCap : initialCapital).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
@@ -917,21 +939,21 @@ export default function App() {
                             <tr key={index} className="even:bg-slate-900/30 odd:bg-slate-950/50 hover:bg-white/[0.04] print:even:bg-slate-50 print:odd:bg-white transition-colors">
                               <td className="px-5 py-3.5 text-slate-400 print:text-slate-500">{index + 1}</td>
                               <td className="px-5 py-3.5 text-slate-400 print:text-slate-500">{trade.date || '-'}</td>
-                              <td className="px-5 py-3.5 text-slate-300 print:text-slate-700">${trade.capital}</td>
+                              <td className="px-5 py-3.5 text-slate-300 print:text-slate-700">${Number(trade.capital).toFixed(2)}</td>
                               <td className="px-5 py-3.5 text-emerald-400 print:text-emerald-600 font-bold text-lg">
-                                {trade.profit > 0 ? `+${trade.profit}$` : '-'}
+                                {trade.profit > 0 ? `+${Number(trade.profit).toFixed(2)}$` : '-'}
                               </td>
                               <td className="px-5 py-3.5 text-blue-500 print:text-blue-600 font-bold text-lg">
-                                {trade.loss > 0 ? `-${trade.loss}$` : '-'}
+                                {trade.loss > 0 ? `-${Number(trade.loss).toFixed(2)}$` : '-'}
                               </td>
                               <td className="px-5 py-3.5 text-cyan-400 print:text-cyan-600">
-                                {trade.net > 0 ? `$${trade.withdrawn}` : '-'}
+                                {trade.net > 0 ? `$${Number(trade.withdrawn).toFixed(2)}` : '-'}
                               </td>
                               <td className="px-5 py-3.5 text-indigo-400 print:text-indigo-600">
-                                {trade.net > 0 ? `$${trade.kept}` : '-'}
+                                {trade.net > 0 ? `$${Number(trade.kept).toFixed(2)}` : '-'}
                               </td>
                               <td className="px-5 py-3.5 text-slate-200 print:text-slate-800 font-bold text-lg">
-                                ${trade.currentCap}
+                                ${Number(trade.currentCap).toFixed(2)}
                               </td>
                               <td className="px-5 py-3.5 print:hidden text-left">
                                 <button onClick={() => handleRemoveTrade(index)} className="text-slate-500 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-colors p-2">
@@ -943,6 +965,29 @@ export default function App() {
                         })
                       )}
                     </tbody>
+                    {enrichedActualTrades.length > 0 && (
+                      <tfoot className="bg-slate-900/80 print:bg-slate-100 font-bold border-t border-white/10 print:border-slate-300">
+                        <tr>
+                          <td colSpan={3} className="px-5 py-4 text-slate-300 print:text-slate-700 text-left">المجموع:</td>
+                          <td className="px-5 py-4 text-emerald-400 print:text-emerald-600">
+                            +${enrichedActualTrades.reduce((sum, t) => sum + (t.profit || 0), 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                          </td>
+                          <td className="px-5 py-4 text-blue-500 print:text-blue-600">
+                            -${enrichedActualTrades.reduce((sum, t) => sum + (t.loss || 0), 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                          </td>
+                          <td className="px-5 py-4 text-cyan-400 print:text-cyan-600">
+                            ${enrichedActualTrades.reduce((sum, t) => sum + (t.withdrawn || 0), 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                          </td>
+                          <td className="px-5 py-4 text-indigo-400 print:text-indigo-600">
+                            ${enrichedActualTrades.reduce((sum, t) => sum + (t.kept || 0), 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                          </td>
+                          <td className="px-5 py-4 text-slate-200 print:text-slate-800">
+                            ${(enrichedActualTrades.length > 0 ? enrichedActualTrades[enrichedActualTrades.length - 1].currentCap : initialCapital).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                          </td>
+                          <td className="px-5 py-4 print:hidden"></td>
+                        </tr>
+                      </tfoot>
+                    )}
                   </table>
                 </div>
                 )}
@@ -983,16 +1028,14 @@ export default function App() {
                   </div>
                 )}
 
-                {actualTrades.length > 0 && (
-                  <button 
-                    onClick={analyzePerformance}
-                    disabled={isAnalyzing}
-                    className="print:hidden w-full mt-4 py-3 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-medium rounded-xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-purple-500/25 disabled:opacity-70"
-                  >
-                    {isAnalyzing ? <Loader2 className="w-5 h-5 animate-spin" /> : <BrainCircuit className="w-5 h-5" />}
-                    {isAnalyzing ? 'جاري التحليل...' : 'حلل أدائي بالذكاء الاصطناعي'}
-                  </button>
-                )}
+                <button 
+                  onClick={analyzePerformance}
+                  disabled={isAnalyzing || actualTrades.length === 0}
+                  className={`print:hidden w-full mt-4 py-3 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-medium rounded-xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-purple-500/25 ${isAnalyzing || actualTrades.length === 0 ? 'opacity-50 cursor-not-allowed' : ''}`}
+                >
+                  {isAnalyzing ? <Loader2 className="w-5 h-5 animate-spin" /> : <BrainCircuit className="w-5 h-5" />}
+                  {isAnalyzing ? 'جاري التحليل...' : 'حلل أدائي بالذكاء الاصطناعي'}
+                </button>
               </div>
 
               {/* AI Result Section */}
@@ -1030,7 +1073,8 @@ export default function App() {
               {showTable ? <ChevronUp className="w-5 h-5 text-slate-400" /> : <ChevronDown className="w-5 h-5 text-slate-400" />}
             </button>
 
-            <div className={`${showTable ? 'block' : 'hidden print:block'} bg-slate-900/50 backdrop-blur-xl rounded-3xl shadow-2xl border border-white/5 overflow-hidden print:bg-white print:shadow-none print:border-none`}>
+            {showTable && (
+            <div className={`bg-slate-900/50 backdrop-blur-xl rounded-3xl shadow-2xl border border-white/5 overflow-hidden print:bg-white print:shadow-none print:border-none`}>
               <div className="p-6 border-b border-white/5 print:border-slate-200 hidden print:block">
                 <h3 className="text-lg font-semibold text-white print:text-slate-900">تفاصيل الصفقات</h3>
               </div>
@@ -1067,6 +1111,7 @@ export default function App() {
               </table>
             </div>
           </div>
+          )}
           </div>
         )}
 
